@@ -282,7 +282,7 @@ function finishBatch($chat_id, $admin_id) {
     $token = $batches[$active]['token'];
     jsave('batches.json', $batches);
     setActiveBatch($admin_id, null);
-    $link = "https://t.me/" . BOT_USERNAME . "?start=" . $token;
+    $link = "https://t.me/bmwytxh4ckbot" . BOT_USERNAME . "?start=" . $token;
     downloadReadyCard($chat_id, $cnt, $link);
 }
 
