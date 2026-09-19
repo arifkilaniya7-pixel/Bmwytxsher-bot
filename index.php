@@ -1,15 +1,6 @@
 <?php
 /**
- * Telegram Force-Join Bot - Professional Admin Panel
- * Features:
- *  - Inline button based admin panel
- *  - Add/Delete channels dynamically
- *  - Upload files (auto-detect forwarded media)
- *  - /dn generates share link
- *  - User: force join -> verify -> files delivered
- *  - Already verified users get files instantly
- *  - Broadcast with text/photo/video support
- *  - Nothing auto-deletes
+ * Telegram Force-Join Bot - Pro Flow (Auto File Add)
  */
 
 error_reporting(E_ALL);
@@ -18,12 +9,12 @@ ini_set('log_errors', 1);
 
 // ================== CONFIG ==================
 define('BOT_TOKEN', getenv('BOT_TOKEN') ?: 'YAHAN_APNA_TOKEN');
-define('BOT_USERNAME', getenv('BOT_USERNAME') ?: 'bmwytxh4ckbot');
+define('BOT_USERNAME', getenv('BOT_USERNAME') ?: 'FileShere4bot');
 define('WEBHOOK_SECRET', getenv('WEBHOOK_SECRET') ?: 'bmwytx2024');
 
 $ADMIN_IDS = [8980897228, 5997885135];
 
-// Default 5 channels — inhe admin panel se delete nahi kar sakte
+// Default 5 channels — cannot be deleted
 $DEFAULT_CHANNELS = [
     ['id' => '-1000000000001', 'link' => 'https://t.me/+JQTJ0zj84ftlZDdl', 'name' => 'Channel 1'],
     ['id' => '-1000000000002', 'link' => 'https://t.me/+UxP0ioC9Kp00MjVl', 'name' => 'Channel 2'],
@@ -35,7 +26,7 @@ $DEFAULT_CHANNELS = [
 define('DATA_DIR', __DIR__ . '/data');
 if (!is_dir(DATA_DIR)) @mkdir(DATA_DIR, 0755, true);
 
-// ================== JSON HELPERS ==================
+// ================== JSON ==================
 function jload($file) {
     $path = DATA_DIR . '/' . $file;
     if (!file_exists($path)) return [];
@@ -45,15 +36,13 @@ function jload($file) {
 function jsave($file, $data) {
     file_put_contents(DATA_DIR . '/' . $file, json_encode($data, JSON_PRETTY_PRINT | JSON_UNESCAPED_UNICODE), LOCK_EX);
 }
-
-// Channels load — merge default + extra, extra deletable
 function getChannels() {
     global $DEFAULT_CHANNELS;
     $extra = jload('channels.json');
     return array_merge($DEFAULT_CHANNELS, $extra);
 }
 
-// ================== TELEGRAM API ==================
+// ================== API ==================
 function api($method, $params = []) {
     $url = "https://api.telegram.org/bot" . BOT_TOKEN . "/" . $method;
     $ch = curl_init();
@@ -68,12 +57,10 @@ function api($method, $params = []) {
     curl_close($ch);
     return json_decode($res, true);
 }
-
 function isAdmin($uid) {
     global $ADMIN_IDS;
     return in_array((int)$uid, array_map('intval', $ADMIN_IDS), true);
 }
-
 function baseUrl() {
     $scheme = (!empty($_SERVER['HTTPS']) && $_SERVER['HTTPS'] !== 'off') ? 'https' : 'http';
     return $scheme . '://' . ($_SERVER['HTTP_HOST'] ?? 'localhost') . strtok($_SERVER['REQUEST_URI'] ?? '/', '?');
@@ -92,12 +79,10 @@ function checkAllChannels($user_id) {
     return true;
 }
 
-// ================== WEBHOOK SETUP ==================
+// ================== WEBHOOK ==================
 if (isset($_GET['set']) && $_GET['set'] === WEBHOOK_SECRET) {
-    $r = api('setWebhook', ['url' => baseUrl() . '/index.php']);
     header('Content-Type: application/json');
-    echo json_encode($r, JSON_PRETTY_PRINT);
-    exit;
+    echo json_encode(api('setWebhook', ['url' => baseUrl() . '/index.php']), JSON_PRETTY_PRINT); exit;
 }
 if (isset($_GET['info'])) { header('Content-Type: application/json'); echo json_encode(api('getWebhookInfo'), JSON_PRETTY_PRINT); exit; }
 if (isset($_GET['ping'])) { echo "OK - Bot is alive"; exit; }
@@ -114,13 +99,12 @@ function saveUser($user_id, $from) {
     ];
     jsave('users.json', $users);
 }
-
 function markVerified($user_id) {
     $users = jload('users.json');
     if (isset($users[$user_id])) { $users[$user_id]['verified'] = 1; jsave('users.json', $users); }
 }
 
-// ================== BATCH HELPERS ==================
+// ================== BATCH ==================
 function getActiveBatch($admin_id) {
     $state = jload('state.json');
     return $state[$admin_id]['active_batch'] ?? null;
@@ -146,108 +130,78 @@ function createBatch($admin_id) {
     return $new_id;
 }
 
-// ================== UI BUILDERS ==================
+// ================== UI ==================
 function mainMenuKeyboard() {
     return json_encode(['inline_keyboard' => [
-        [['text' => '📢 चैनल मैनेज करें', 'callback_data' => 'menu_channels']],
-        [['text' => '📁 नया बैच / फाइल जोड़ें', 'callback_data' => 'menu_upload']],
-        [['text' => '🔗 सभी लिंक', 'callback_data' => 'menu_links']],
-        [['text' => '📊 स्टेटिस्टिक्स', 'callback_data' => 'menu_stats']],
-        [['text' => '📢 ब्रॉडकास्ट', 'callback_data' => 'menu_broadcast']],
+        [['text' => '📢 Manage Channels', 'callback_data' => 'menu_channels']],
+        [['text' => '📁 New Batch / Add Files', 'callback_data' => 'menu_upload']],
+        [['text' => '🔗 All Links', 'callback_data' => 'menu_links']],
+        [['text' => '📊 Statistics', 'callback_data' => 'menu_stats']],
+        [['text' => '📢 Broadcast', 'callback_data' => 'menu_broadcast']],
     ]]);
 }
-
 function showMainMenu($chat_id, $edit_id = null) {
-    $text = "🛠️ <b>एडमिन पैनल</b>\n\nनीचे से कोई option चुनो:";
+    $text = "🛠️ <b>Admin Panel</b>\n\nChoose an option below:";
     $kb = mainMenuKeyboard();
-    if ($edit_id) {
-        api('editMessageText', ['chat_id' => $chat_id, 'message_id' => $edit_id, 'text' => $text, 'parse_mode' => 'HTML', 'reply_markup' => $kb]);
-    } else {
-        api('sendMessage', ['chat_id' => $chat_id, 'text' => $text, 'parse_mode' => 'HTML', 'reply_markup' => $kb]);
-    }
+    if ($edit_id) api('editMessageText', ['chat_id' => $chat_id, 'message_id' => $edit_id, 'text' => $text, 'parse_mode' => 'HTML', 'reply_markup' => $kb]);
+    else api('sendMessage', ['chat_id' => $chat_id, 'text' => $text, 'parse_mode' => 'HTML', 'reply_markup' => $kb]);
 }
-
 function showChannelsMenu($chat_id, $edit_id = null) {
     $channels = getChannels();
-    $text = "📢 <b>चैनल मैनेजमेंट</b>\n\n";
-    $text .= "कुल चैनल: <b>" . count($channels) . "</b>\n\n";
-    $text .= "पहले 5 default हैं (डिलीट नहीं हो सकते)।\nबाकी extra हैं जिन्हें डिलीट किया जा सकता है।\n\n";
-    $text .= "नया चैनल जोड़ने के लिए नीचे <b>➕ चैनल जोड़ें</b> दबाओ।";
-
+    $text = "📢 <b>Channel Management</b>\n\nTotal: <b>" . count($channels) . "</b>\n\nFirst 5 are default (cannot delete).\nOthers can be deleted.";
     $kb = [];
-    foreach ($channels as $idx => $ch) {
-        $kb[] = [['text' => "🗑️ " . $ch['name'], 'callback_data' => 'delch:' . $idx]];
-    }
-    $kb[] = [['text' => '➕ चैनल जोड़ें', 'callback_data' => 'addch']];
-    $kb[] = [['text' => '◀️ वापस', 'callback_data' => 'menu_main']];
-
-    $params = [
-        'chat_id' => $chat_id, 'text' => $text, 'parse_mode' => 'HTML',
-        'reply_markup' => json_encode(['inline_keyboard' => $kb]),
-        'disable_web_page_preview' => true
-    ];
+    foreach ($channels as $idx => $ch) $kb[] = [['text' => "🗑️ " . $ch['name'], 'callback_data' => 'delch:' . $idx]];
+    $kb[] = [['text' => '➕ Add Channel', 'callback_data' => 'addch']];
+    $kb[] = [['text' => '◀️ Back', 'callback_data' => 'menu_main']];
+    $params = ['chat_id' => $chat_id, 'text' => $text, 'parse_mode' => 'HTML', 'reply_markup' => json_encode(['inline_keyboard' => $kb])];
     if ($edit_id) { $params['message_id'] = $edit_id; api('editMessageText', $params); }
     else api('sendMessage', $params);
 }
-
 function showUploadMenu($chat_id, $admin_id, $edit_id = null) {
     $active = getActiveBatch($admin_id);
     if ($active === null) {
-        $text = "📁 <b>फाइल अपलोड</b>\n\nकोई एक्टिव बैच नहीं है। नया बैच शुरू करने के लिए नीचे दबाओ।";
+        $text = "📁 <b>File Upload</b>\n\nNo active batch. Start a new batch below.";
         $kb = [
-            [['text' => '🆕 नया बैच शुरू करें', 'callback_data' => 'newbatch']],
-            [['text' => '◀️ वापस', 'callback_data' => 'menu_main']],
+            [['text' => '🆕 Start New Batch', 'callback_data' => 'newbatch']],
+            [['text' => '◀️ Back', 'callback_data' => 'menu_main']],
         ];
     } else {
         $batches = jload('batches.json');
         $cnt = count($batches[$active]['files'] ?? []);
-        $text = "📁 <b>एक्टिव बैच #{$active}</b>\n\n";
-        $text .= "अब तक जोड़ी गई फाइलें: <b>{$cnt}</b>\n\n";
-        $text .= "कैसे फाइल जोड़ें:\n";
-        $text .= "1. बॉट को कोई video/photo/document भेजो\n";
-        $text .= "2. उस पर reply करके <code>/save caption</code> लिखो\n\n";
-        $text .= "जब सब हो जाए, तो नीचे <b>✅ DN (लिंक बनाओ)</b> दबाओ।";
-
+        $text = "📁 <b>Active Batch #{$active}</b>\n\nFiles added: <b>{$cnt}</b>\n\n";
+        $text .= "➡️ Just send any file/video/photo to this bot.\nIt will be added automatically.\n\nWhen done, press <b>✅ DN (Create Link)</b>.";
         $kb = [
-            [['text' => '✅ DN (लिंक बनाओ)', 'callback_data' => 'finishbatch']],
-            [['text' => '❌ बैच कैंसिल करें', 'callback_data' => 'cancelbatch']],
-            [['text' => '◀️ वापस', 'callback_data' => 'menu_main']],
+            [['text' => '✅ DN (Create Link)', 'callback_data' => 'finishbatch']],
+            [['text' => '❌ Cancel Batch', 'callback_data' => 'cancelbatch']],
+            [['text' => '◀️ Back', 'callback_data' => 'menu_main']],
         ];
     }
-    $params = [
-        'chat_id' => $chat_id, 'text' => $text, 'parse_mode' => 'HTML',
-        'reply_markup' => json_encode(['inline_keyboard' => $kb])
-    ];
+    $params = ['chat_id' => $chat_id, 'text' => $text, 'parse_mode' => 'HTML', 'reply_markup' => json_encode(['inline_keyboard' => $kb])];
     if ($edit_id) { $params['message_id'] = $edit_id; api('editMessageText', $params); }
     else api('sendMessage', $params);
 }
-
 function showLinksMenu($chat_id, $edit_id = null) {
     $batches = jload('batches.json');
     $published = array_filter($batches, fn($b) => ($b['status'] ?? '') === 'published');
     if (!$published) {
-        $text = "🔗 <b>सभी लिंक</b>\n\nकोई लिंक नहीं बना अभी।";
-        $kb = [[['text' => '◀️ वापस', 'callback_data' => 'menu_main']]];
+        $text = "🔗 <b>All Links</b>\n\nNo links created yet.";
+        $kb = [[['text' => '◀️ Back', 'callback_data' => 'menu_main']]];
     } else {
-        $text = "🔗 <b>सभी पब्लिश्ड लिंक</b>\n\n";
+        $text = "🔗 <b>All Published Links</b>\n\n";
         $kb = [];
         foreach (array_reverse($published, true) as $bid => $b) {
             $link = "https://t.me/" . BOT_USERNAME . "?start=" . $b['token'];
             $cnt = count($b['files'] ?? []);
-            $text .= "#{$bid} — {$cnt} फाइलें\n<code>{$link}</code>\n\n";
-            $kb[] = [['text' => "🗑️ डिलीट लिंक #{$bid}", 'callback_data' => 'dellink:' . $bid]];
+            $text .= "#{$bid} — {$cnt} files\n<code>{$link}</code>\n\n";
+            $kb[] = [['text' => "🗑️ Delete Link #{$bid}", 'callback_data' => 'dellink:' . $bid]];
         }
-        $kb[] = [['text' => '◀️ वापस', 'callback_data' => 'menu_main']];
+        $kb[] = [['text' => '◀️ Back', 'callback_data' => 'menu_main']];
     }
-    $params = [
-        'chat_id' => $chat_id, 'text' => $text, 'parse_mode' => 'HTML',
-        'reply_markup' => json_encode(['inline_keyboard' => $kb]),
-        'disable_web_page_preview' => true
-    ];
+    $params = ['chat_id' => $chat_id, 'text' => $text, 'parse_mode' => 'HTML',
+        'reply_markup' => json_encode(['inline_keyboard' => $kb]), 'disable_web_page_preview' => true];
     if ($edit_id) { $params['message_id'] = $edit_id; api('editMessageText', $params); }
     else api('sendMessage', $params);
 }
-
 function showStats($chat_id, $edit_id = null) {
     $users = jload('users.json');
     $batches = jload('batches.json');
@@ -256,45 +210,48 @@ function showStats($chat_id, $edit_id = null) {
     $published = count(array_filter($batches, fn($b) => ($b['status'] ?? '') === 'published'));
     $files = 0;
     foreach ($batches as $b) $files += count($b['files'] ?? []);
-
-    $text = "📊 <b>स्टेटिस्टिक्स</b>\n\n"
-        . "👥 कुल यूज़र्स: <b>{$total}</b>\n"
-        . "✅ वेरिफाइड: <b>{$verified}</b>\n"
-        . "🔗 पब्लिश्ड लिंक्स: <b>{$published}</b>\n"
-        . "📁 कुल फाइलें: <b>{$files}</b>";
-
-    $kb = [[['text' => '🔄 रिफ्रेश', 'callback_data' => 'menu_stats'], ['text' => '◀️ वापस', 'callback_data' => 'menu_main']]];
-
+    $text = "📊 <b>Statistics</b>\n\n👥 Users: <b>{$total}</b>\n✅ Verified: <b>{$verified}</b>\n🔗 Links: <b>{$published}</b>\n📁 Files: <b>{$files}</b>";
+    $kb = [[['text' => '🔄 Refresh', 'callback_data' => 'menu_stats'], ['text' => '◀️ Back', 'callback_data' => 'menu_main']]];
     $params = ['chat_id' => $chat_id, 'text' => $text, 'parse_mode' => 'HTML', 'reply_markup' => json_encode(['inline_keyboard' => $kb])];
     if ($edit_id) { $params['message_id'] = $edit_id; api('editMessageText', $params); }
     else api('sendMessage', $params);
 }
-
 function showBroadcastMenu($chat_id, $edit_id = null) {
-    $text = "📢 <b>ब्रॉडकास्ट</b>\n\nसभी users को message भेजने के लिए नीचे दबाओ।\n\nफिर अगला message जो भेजोगे (text/photo/video), वो सबको चला जाएगा।";
+    $text = "📢 <b>Broadcast</b>\n\nPress below to start. Then send the message you want to deliver to all users.";
     $kb = [
-        [['text' => '🚀 ब्रॉडकास्ट शुरू करें', 'callback_data' => 'bcast_start']],
-        [['text' => '◀️ वापस', 'callback_data' => 'menu_main']],
+        [['text' => '🚀 Start Broadcast', 'callback_data' => 'bcast_start']],
+        [['text' => '◀️ Back', 'callback_data' => 'menu_main']],
     ];
     $params = ['chat_id' => $chat_id, 'text' => $text, 'parse_mode' => 'HTML', 'reply_markup' => json_encode(['inline_keyboard' => $kb])];
     if ($edit_id) { $params['message_id'] = $edit_id; api('editMessageText', $params); }
     else api('sendMessage', $params);
 }
 
+// ================== FILE ADDED CARD ==================
+function fileAddedCard($chat_id, $file_name, $batch_id, $count, $caption) {
+    $cap = $caption ?: 'Saved';
+    $text = "┏━━━━━━━━━━━━━━━┓\n";
+    $text .= "   📥 <b>FILE ADDED</b>   \n";
+    $text .= "┗━━━━━━━━━━━━━━━┛\n\n";
+    $text .= "📁 <code>" . htmlspecialchars($file_name) . "</code>\n";
+    $text .= "📦 Batch: <b>{$batch_id}</b> File(s)\n";
+    $text .= "📝 Caption: <b>{$cap}</b>\n\n";
+    $text .= "➕ Send more files\n";
+    $text .= "🔗 When finished use /Dn";
+    api('sendMessage', ['chat_id' => $chat_id, 'text' => $text, 'parse_mode' => 'HTML']);
+}
+
 // ================== SEND FILES ==================
 function sendFilesByBatch($chat_id, $batch_id) {
     $batches = jload('batches.json');
     if (!isset($batches[$batch_id])) {
-        api('sendMessage', ['chat_id' => $chat_id, 'text' => "📂 यह बैच नहीं मिला।"]);
-        return;
+        api('sendMessage', ['chat_id' => $chat_id, 'text' => "📂 Batch not found."]); return;
     }
     $files = $batches[$batch_id]['files'] ?? [];
-    if (!$files) {
-        api('sendMessage', ['chat_id' => $chat_id, 'text' => "📂 इस बैच में कोई फाइल नहीं है।"]);
-        return;
-    }
+    if (!$files) { api('sendMessage', ['chat_id' => $chat_id, 'text' => "📂 No files."]); return; }
+
     api('sendMessage', ['chat_id' => $chat_id, 'parse_mode' => 'HTML',
-        'text' => "✅ <b>वेरिफिकेशन सफल!</b>\n\n📦 कुल फाइलें: <b>" . count($files) . "</b>\nभेजी जा रही हैं..."]);
+        'text' => "✅ <b>Verification Successful!</b>\n\n📦 Total: <b>" . count($files) . "</b> files\nSending now..."]);
 
     foreach ($files as $f) {
         $p = ['chat_id' => $chat_id, 'caption' => $f['caption'] ?? ''];
@@ -309,10 +266,10 @@ function sendFilesByBatch($chat_id, $batch_id) {
     }
 }
 
-// ================== VERIFY MESSAGE ==================
+// ================== VERIFY ==================
 function sendVerifyMessage($chat_id, $token) {
     $channels = getChannels();
-    $text = "🔒 <b>फाइलें पाने के लिए पहले नीचे दिए गए सभी चैनल जॉइन करें</b>\n\n";
+    $text = "🔒 <b>Join all channels below to unlock the files</b>\n\n";
     $kb = [];
     $i = 1;
     foreach ($channels as $ch) {
@@ -320,25 +277,22 @@ function sendVerifyMessage($chat_id, $token) {
         $kb[] = [['text' => "📢 Join " . $ch['name'], 'url' => $ch['link']]];
         $i++;
     }
-    $kb[] = [['text' => "✅ Verify / मैंने जॉइन कर लिया", 'callback_data' => 'verify:' . $token]];
-    api('sendMessage', [
-        'chat_id' => $chat_id, 'text' => $text, 'parse_mode' => 'HTML',
+    $kb[] = [['text' => "✅ Verify / I have joined", 'callback_data' => 'verify:' . $token]];
+    api('sendMessage', ['chat_id' => $chat_id, 'text' => $text, 'parse_mode' => 'HTML',
         'disable_web_page_preview' => true,
-        'reply_markup' => json_encode(['inline_keyboard' => $kb])
-    ]);
+        'reply_markup' => json_encode(['inline_keyboard' => $kb])]);
 }
 
 // ================== GET UPDATE ==================
 $raw = file_get_contents('php://input');
 $update = json_decode($raw, true);
 if (!$update) { echo "Bot is running. No update."; exit; }
-
 try { handleUpdate($update); }
 catch (Throwable $e) { file_put_contents(DATA_DIR . '/error.log', date('c') . ' ' . $e->getMessage() . ' @ ' . $e->getFile() . ':' . $e->getLine() . "\n", FILE_APPEND); }
 
-// ================== MAIN HANDLER ==================
+// ================== MAIN ==================
 function handleUpdate($update) {
-    // ============ CALLBACK QUERY ============
+    // ============ CALLBACK ============
     if (isset($update['callback_query'])) {
         $cq = $update['callback_query'];
         $chat_id = $cq['message']['chat']['id'];
@@ -346,35 +300,25 @@ function handleUpdate($update) {
         $user_id = $cq['from']['id'];
         $data    = $cq['data'] ?? '';
 
-        // ---- User verify ----
         if (strpos($data, 'verify:') === 0) {
             $token = substr($data, 7);
             if (checkAllChannels($user_id)) {
-                api('answerCallbackQuery', ['callback_query_id' => $cq['id'], 'text' => '✅ वेरिफिकेशन सफल!']);
+                api('answerCallbackQuery', ['callback_query_id' => $cq['id'], 'text' => '✅ Verified!']);
                 markVerified($user_id);
                 $batches = jload('batches.json');
                 $batch_id = null;
                 foreach ($batches as $bid => $b) {
                     if (($b['token'] ?? '') === $token && ($b['status'] ?? '') === 'published') { $batch_id = $bid; break; }
                 }
-                if ($batch_id) {
-                    api('deleteMessage', ['chat_id' => $chat_id, 'message_id' => $msg_id]);
-                    sendFilesByBatch($chat_id, $batch_id);
-                } else {
-                    api('answerCallbackQuery', ['callback_query_id' => $cq['id'], 'text' => '❌ लिंक अमान्य है।', 'show_alert' => true]);
-                }
+                if ($batch_id) { api('deleteMessage', ['chat_id' => $chat_id, 'message_id' => $msg_id]); sendFilesByBatch($chat_id, $batch_id); }
+                else api('answerCallbackQuery', ['callback_query_id' => $cq['id'], 'text' => '❌ Invalid link.', 'show_alert' => true]);
             } else {
-                api('answerCallbackQuery', [
-                    'callback_query_id' => $cq['id'],
-                    'text' => '❌ कृपया पहले सभी चैनल जॉइन करें!',
-                    'show_alert' => true
-                ]);
+                api('answerCallbackQuery', ['callback_query_id' => $cq['id'], 'text' => '❌ Join all channels first!', 'show_alert' => true]);
             }
             return;
         }
 
-        // ---- Admin panel ----
-        if (!isAdmin($user_id)) { api('answerCallbackQuery', ['callback_query_id' => $cq['id'], 'text' => '❌ आप एडमिन नहीं हैं।', 'show_alert' => true]); return; }
+        if (!isAdmin($user_id)) { api('answerCallbackQuery', ['callback_query_id' => $cq['id'], 'text' => '❌ Not admin.', 'show_alert' => true]); return; }
 
         if ($data === 'menu_main')     { api('answerCallbackQuery', ['callback_query_id' => $cq['id']]); showMainMenu($chat_id, $msg_id); return; }
         if ($data === 'menu_channels') { api('answerCallbackQuery', ['callback_query_id' => $cq['id']]); showChannelsMenu($chat_id, $msg_id); return; }
@@ -383,16 +327,12 @@ function handleUpdate($update) {
         if ($data === 'menu_stats')    { api('answerCallbackQuery', ['callback_query_id' => $cq['id']]); showStats($chat_id, $msg_id); return; }
         if ($data === 'menu_broadcast'){ api('answerCallbackQuery', ['callback_query_id' => $cq['id']]); showBroadcastMenu($chat_id, $msg_id); return; }
 
-        // ---- Channel management ----
         if ($data === 'addch') {
             $state = jload('state.json');
             $state[$user_id]['awaiting'] = 'addchannel';
             jsave('state.json', $state);
-            api('sendMessage', [
-                'chat_id' => $chat_id,
-                'parse_mode' => 'HTML',
-                'text' => "➕ <b>नया चैनल जोड़ें</b>\n\nनीचे format में message भेजो:\n\n<code>Channel Name | @username_or_-100ID | https://t.me/invitelink</code>\n\nउदाहरण:\n<code>My Channel | @mychannel | https://t.me/mychannel</code>\n\nया private के लिए:\n<code>My Channel | -1001234567890 | https://t.me/+invite_code</code>"
-            ]);
+            api('sendMessage', ['chat_id' => $chat_id, 'parse_mode' => 'HTML',
+                'text' => "➕ <b>Add New Channel</b>\n\nSend in this format:\n\n<code>Channel Name | @username_or_-100ID | https://t.me/link</code>"]);
             api('answerCallbackQuery', ['callback_query_id' => $cq['id']]);
             return;
         }
@@ -401,35 +341,30 @@ function handleUpdate($update) {
             $idx = (int)substr($data, 6);
             $channels = getChannels();
             if (!isset($channels[$idx]) || $idx < 5) {
-                api('answerCallbackQuery', ['callback_query_id' => $cq['id'], 'text' => '❌ यह default चैनल है, डिलीट नहीं हो सकता।', 'show_alert' => true]);
-                return;
+                api('answerCallbackQuery', ['callback_query_id' => $cq['id'], 'text' => '❌ Default channel.', 'show_alert' => true]); return;
             }
             $extra = jload('channels.json');
             $extra_idx = $idx - 5;
             if (isset($extra[$extra_idx])) {
                 $removed = $extra[$extra_idx];
                 unset($extra[$extra_idx]);
-                $extra = array_values($extra);
-                jsave('channels.json', $extra);
-                api('answerCallbackQuery', ['callback_query_id' => $cq['id'], 'text' => "🗑️ {$removed['name']} डिलीट हो गया"]);
-            } else {
-                api('answerCallbackQuery', ['callback_query_id' => $cq['id'], 'text' => '❌ नहीं मिला', 'show_alert' => true]);
+                jsave('channels.json', array_values($extra));
+                api('answerCallbackQuery', ['callback_query_id' => $cq['id'], 'text' => "🗑️ {$removed['name']} deleted"]);
             }
             showChannelsMenu($chat_id, $msg_id);
             return;
         }
 
-        // ---- Batch management ----
         if ($data === 'newbatch') {
             $existing = getActiveBatch($user_id);
             if ($existing !== null) {
-                api('answerCallbackQuery', ['callback_query_id' => $cq['id'], 'text' => "⚠️ पहले वाला बैच #{$existing} खुला है।", 'show_alert' => true]);
-                return;
+                api('answerCallbackQuery', ['callback_query_id' => $cq['id'], 'text' => "⚠️ Batch #{$existing} open.", 'show_alert' => true]); return;
             }
             $bid = createBatch($user_id);
             setActiveBatch($user_id, $bid);
-            api('answerCallbackQuery', ['callback_query_id' => $cq['id'], 'text' => "✅ बैच #{$bid} शुरू हुआ"]);
-            showUploadMenu($chat_id, $user_id, $msg_id);
+            api('answerCallbackQuery', ['callback_query_id' => $cq['id'], 'text' => "✅ Batch #{$bid} started"]);
+            api('sendMessage', ['chat_id' => $chat_id, 'parse_mode' => 'HTML',
+                'text' => "📁 <b>Batch #{$bid} started</b>\n\nNow send any file/video/photo to this bot.\nIt will be added automatically.\n\nWhen finished use /Dn"]);
             return;
         }
 
@@ -440,7 +375,7 @@ function handleUpdate($update) {
                 unset($batches[$active]);
                 jsave('batches.json', $batches);
                 setActiveBatch($user_id, null);
-                api('answerCallbackQuery', ['callback_query_id' => $cq['id'], 'text' => "🗑️ बैच #{$active} कैंसिल हो गया"]);
+                api('answerCallbackQuery', ['callback_query_id' => $cq['id'], 'text' => "🗑️ Cancelled"]);
             }
             showUploadMenu($chat_id, $user_id, $msg_id);
             return;
@@ -448,27 +383,24 @@ function handleUpdate($update) {
 
         if ($data === 'finishbatch') {
             $active = getActiveBatch($user_id);
-            if ($active === null) {
-                api('answerCallbackQuery', ['callback_query_id' => $cq['id'], 'text' => '⚠️ कोई एक्टिव बैच नहीं', 'show_alert' => true]);
-                return;
-            }
+            if ($active === null) { api('answerCallbackQuery', ['callback_query_id' => $cq['id'], 'text' => '⚠️ No active batch.', 'show_alert' => true]); return; }
             $batches = jload('batches.json');
             $cnt = count($batches[$active]['files'] ?? []);
-            if ($cnt === 0) {
-                api('answerCallbackQuery', ['callback_query_id' => $cq['id'], 'text' => '⚠️ बैच खाली है, पहले फाइल जोड़ो।', 'show_alert' => true]);
-                return;
-            }
+            if ($cnt === 0) { api('answerCallbackQuery', ['callback_query_id' => $cq['id'], 'text' => '⚠️ Empty batch.', 'show_alert' => true]); return; }
             $batches[$active]['status'] = 'published';
             $token = $batches[$active]['token'];
             jsave('batches.json', $batches);
             setActiveBatch($user_id, null);
-
             $link = "https://t.me/" . BOT_USERNAME . "?start=" . $token;
-            api('answerCallbackQuery', ['callback_query_id' => $cq['id'], 'text' => '✅ लिंक बन गया!']);
-            api('sendMessage', [
-                'chat_id' => $chat_id, 'parse_mode' => 'HTML', 'disable_web_page_preview' => true,
-                'text' => "🎉 <b>लिंक तैयार!</b>\n\n🆔 बैच: #{$active}\n📁 फाइलें: <b>{$cnt}</b>\n\n🔗 शेयर लिंक:\n<code>{$link}</code>\n\nइसे कहीं भी शेयर करो।"
-            ]);
+            api('answerCallbackQuery', ['callback_query_id' => $cq['id'], 'text' => '✅ Link created!']);
+            $card = "┏━━━━━━━━━━━━━━━┓\n";
+            $card .= "   ✅ <b>DOWNLOAD READY</b>   \n";
+            $card .= "┗━━━━━━━━━━━━━━━┛\n\n";
+            $card .= "📦 Files: <b>{$cnt}</b>\n";
+            $card .= "🔐 Status: <b>Protected</b>\n\n";
+            $card .= "🔗 <b>YOUR SHARE LINK</b>\n\n";
+            $card .= "<code>{$link}</code>";
+            api('sendMessage', ['chat_id' => $chat_id, 'text' => $card, 'parse_mode' => 'HTML', 'disable_web_page_preview' => true]);
             return;
         }
 
@@ -478,28 +410,21 @@ function handleUpdate($update) {
             if (isset($batches[$bid])) {
                 unset($batches[$bid]);
                 jsave('batches.json', $batches);
-                api('answerCallbackQuery', ['callback_query_id' => $cq['id'], 'text' => "🗑️ लिंक #{$bid} डिलीट हो गया"]);
-            } else {
-                api('answerCallbackQuery', ['callback_query_id' => $cq['id'], 'text' => '❌ नहीं मिला', 'show_alert' => true]);
+                api('answerCallbackQuery', ['callback_query_id' => $cq['id'], 'text' => "🗑️ Link #{$bid} deleted"]);
             }
             showLinksMenu($chat_id, $msg_id);
             return;
         }
 
-        // ---- Broadcast ----
         if ($data === 'bcast_start') {
             $state = jload('state.json');
             $state[$user_id]['awaiting'] = 'broadcast';
             jsave('state.json', $state);
-            api('sendMessage', [
-                'chat_id' => $chat_id, 'parse_mode' => 'HTML',
-                'text' => "📢 <b>ब्रॉडकास्ट मोड चालू</b>\n\nअब जो message भेजोगे (text / photo / video / document), वो सभी users को चला जाएगा।\n\nरद्द करने के लिए: /cancel"
-            ]);
+            api('sendMessage', ['chat_id' => $chat_id, 'parse_mode' => 'HTML',
+                'text' => "📢 <b>Broadcast Mode</b>\n\nNow send the message (text/photo/video) to deliver to all users.\n\nCancel: /cancel"]);
             api('answerCallbackQuery', ['callback_query_id' => $cq['id']]);
             return;
         }
-
-        api('answerCallbackQuery', ['callback_query_id' => $cq['id']]);
         return;
     }
 
@@ -518,40 +443,35 @@ function handleUpdate($update) {
         $state = jload('state.json');
         $awaiting = $state[$user_id]['awaiting'] ?? null;
 
-        // /cancel
         if ($text === '/cancel') {
             unset($state[$user_id]['awaiting']);
             jsave('state.json', $state);
-            api('sendMessage', ['chat_id' => $chat_id, 'text' => "❌ रद्द कर दिया।"]);
+            api('sendMessage', ['chat_id' => $chat_id, 'text' => "❌ Cancelled."]);
             return;
         }
 
-        // Channel add pending
         if ($awaiting === 'addchannel' && $text) {
             $parts = array_map('trim', explode('|', $text));
             if (count($parts) !== 3 || !$parts[0] || !$parts[1] || !$parts[2]) {
                 api('sendMessage', ['chat_id' => $chat_id, 'parse_mode' => 'HTML',
-                    'text' => "❌ Format गलत है। ऐसे भेजो:\n\n<code>Channel Name | @username | https://t.me/link</code>"]);
-                return;
+                    'text' => "❌ Wrong format. Send:\n<code>Name | @username | https://t.me/link</code>"]); return;
             }
             $extra = jload('channels.json');
             $extra[] = ['name' => $parts[0], 'id' => $parts[1], 'link' => $parts[2]];
             jsave('channels.json', $extra);
             unset($state[$user_id]['awaiting']);
             jsave('state.json', $state);
-            api('sendMessage', ['chat_id' => $chat_id, 'text' => "✅ चैनल जुड़ गया: {$parts[0]}"]);
+            api('sendMessage', ['chat_id' => $chat_id, 'text' => "✅ Added: {$parts[0]}"]);
             showChannelsMenu($chat_id);
             return;
         }
 
-        // Broadcast pending
         if ($awaiting === 'broadcast') {
             unset($state[$user_id]['awaiting']);
             jsave('state.json', $state);
-
             $users = jload('users.json');
             $total = count($users);
-            api('sendMessage', ['chat_id' => $chat_id, 'text' => "📤 ब्रॉडकास्ट शुरू ({$total} users)..."]);
+            api('sendMessage', ['chat_id' => $chat_id, 'text' => "📤 Broadcasting to {$total} users..."]);
             $ok = 0; $fail = 0;
             foreach ($users as $uid => $u) {
                 $params = ['chat_id' => $uid];
@@ -560,74 +480,56 @@ function handleUpdate($update) {
                 elseif (isset($msg['video'])) { $params['video'] = $msg['video']['file_id']; $params['caption'] = $msg['caption'] ?? ''; $r = api('sendVideo', $params); }
                 elseif (isset($msg['document'])) { $params['document'] = $msg['document']['file_id']; $params['caption'] = $msg['caption'] ?? ''; $r = api('sendDocument', $params); }
                 else { $r = null; }
-
                 if ($r && !empty($r['ok'])) $ok++; else $fail++;
                 usleep(70000);
             }
-            api('sendMessage', ['chat_id' => $chat_id, 'text' => "✅ ब्रॉडकास्ट पूरा\nसफल: {$ok}\nफेल: {$fail}"]);
+            api('sendMessage', ['chat_id' => $chat_id, 'text' => "✅ Broadcast done\nSuccess: {$ok}\nFailed: {$fail}"]);
             showMainMenu($chat_id);
             return;
         }
 
-        // /save reply
-        if (strpos($text, '/save') === 0 && isset($msg['reply_to_message'])) {
+        // === AUTO FILE ADD — No /save needed ===
+        if (isset($msg['document']) || isset($msg['video']) || isset($msg['photo']) || isset($msg['audio'])) {
             $active = getActiveBatch($user_id);
-            if ($active === null) {
-                api('sendMessage', ['chat_id' => $chat_id, 'text' => "⚠️ पहले एडमिन पैनल से नया बैच शुरू करो।"]);
-                return;
-            }
-            $rt = $msg['reply_to_message'];
-            $caption = trim(substr($text, strlen('/save')));
-            $type = null; $fid = null;
-            if (isset($rt['document'])) { $type = 'document'; $fid = $rt['document']['file_id']; }
-            elseif (isset($rt['video'])) { $type = 'video'; $fid = $rt['video']['file_id']; }
-            elseif (isset($rt['photo'])) { $type = 'photo'; $fid = end($rt['photo'])['file_id']; }
-            elseif (isset($rt['audio'])) { $type = 'audio'; $fid = $rt['audio']['file_id']; }
-
-            if ($type && $fid) {
+            if ($active !== null) {
+                $type = null; $fid = null; $fname = '';
+                if (isset($msg['document'])) { $type = 'document'; $fid = $msg['document']['file_id']; $fname = $msg['document']['file_name'] ?? 'document'; }
+                elseif (isset($msg['video'])) { $type = 'video'; $fid = $msg['video']['file_id']; $fname = $msg['video']['file_name'] ?? 'video'; }
+                elseif (isset($msg['photo'])) { $type = 'photo'; $fid = end($msg['photo'])['file_id']; $fname = 'photo'; }
+                elseif (isset($msg['audio'])) { $type = 'audio'; $fid = $msg['audio']['file_id']; $fname = $msg['audio']['file_name'] ?? 'audio'; }
+                $caption = trim($msg['caption'] ?? 'Saved');
                 $batches = jload('batches.json');
-                $batches[$active]['files'][] = ['type' => $type, 'file_id' => $fid, 'caption' => $caption];
+                $batches[$active]['files'][] = ['type' => $type, 'file_id' => $fid, 'caption' => $caption, 'file_name' => $fname];
                 jsave('batches.json', $batches);
                 $cnt = count($batches[$active]['files']);
-                api('sendMessage', ['chat_id' => $chat_id, 'parse_mode' => 'HTML',
-                    'text' => "✅ फाइल जुड़ी। बैच #{$active} में कुल: <b>{$cnt}</b>\n\nऔर जोड़ो या एडमिन पैनल से <b>DN</b> दबाओ।"]);
+                fileAddedCard($chat_id, $fname, $active, $cnt, $caption);
+                return;
             } else {
-                api('sendMessage', ['chat_id' => $chat_id, 'text' => "❌ Media नहीं मिली।"]);
+                api('sendMessage', ['chat_id' => $chat_id, 'parse_mode' => 'HTML',
+                    'text' => "⚠️ No active batch.\n\nUse /start → 📁 New Batch / Add Files → 🆕 Start New Batch"]);
+                return;
             }
-            return;
         }
 
-        // /start or /admin -> main menu
-        if ($text === '/start' || $text === '/admin' || $text === '') {
-            showMainMenu($chat_id);
-            return;
-        }
-
+        if ($text === '/start' || $text === '/admin') { showMainMenu($chat_id); return; }
         return;
     }
 
-    // ============ USER SIDE ============
+    // ============ USER ============
     $token = null;
     if (strpos($text, '/start') === 0) {
         $parts = explode(' ', trim($text), 2);
         if (isset($parts[1])) $token = trim($parts[1]);
     }
-
     if ($token) {
         $batches = jload('batches.json');
         $batch_id = null;
         foreach ($batches as $bid => $b) {
             if (($b['token'] ?? '') === $token && ($b['status'] ?? '') === 'published') { $batch_id = $bid; break; }
         }
-        if ($batch_id === null) {
-            api('sendMessage', ['chat_id' => $chat_id, 'text' => "❌ यह लिंक अमान्य है या डिलीट हो चुका है।"]);
-            return;
-        }
-
-        // Already verified? -> direct files
+        if ($batch_id === null) { api('sendMessage', ['chat_id' => $chat_id, 'text' => "❌ Invalid link."]); return; }
         $users = jload('users.json');
         $isVerified = !empty($users[$user_id]['verified']);
-
         if ($isVerified || checkAllChannels($user_id)) {
             markVerified($user_id);
             sendFilesByBatch($chat_id, $batch_id);
@@ -636,9 +538,6 @@ function handleUpdate($update) {
         }
         return;
     }
-
-    api('sendMessage', [
-        'chat_id' => $chat_id, 'parse_mode' => 'HTML',
-        'text' => "👋 <b>स्वागत है!</b>\n\nफाइलें पाने के लिए मुझे किसी शेयर लिंक से खोलो।"
-    ]);
+    api('sendMessage', ['chat_id' => $chat_id, 'parse_mode' => 'HTML',
+        'text' => "👋 <b>Welcome!</b>\n\nOpen me from a share link to get files."]);
 }
