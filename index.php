@@ -1,6 +1,19 @@
 <?php
 /**
- * Telegram Force-Join Bot - Pro Flow (Auto File Add)
+ * ==========================================================
+ *   TELEGRAM FORCE-JOIN FILE BOT — FINAL PROFESSIONAL
+ * ==========================================================
+ *   Features:
+ *   - Admin Panel (inline buttons)
+ *   - Manage Channels (add/delete, 5 default protected)
+ *   - Auto file add (just send file, no /save needed)
+ *   - /Dn or DN button → generates ONE share link
+ *   - Broadcast (text/photo/video)
+ *   - Force join 5+ channels
+ *   - Already verified users get files instantly
+ *   - Professional card UI matching pro bots
+ *   - Nothing auto-deletes
+ * ==========================================================
  */
 
 error_reporting(E_ALL);
@@ -14,7 +27,7 @@ define('WEBHOOK_SECRET', getenv('WEBHOOK_SECRET') ?: 'bmwytx2024');
 
 $ADMIN_IDS = [8980897228, 5997885135];
 
-// Default 5 channels — cannot be deleted
+// Default 5 channels — cannot be deleted from admin panel
 $DEFAULT_CHANNELS = [
     ['id' => '-1000000000001', 'link' => 'https://t.me/+JQTJ0zj84ftlZDdl', 'name' => 'Channel 1'],
     ['id' => '-1000000000002', 'link' => 'https://t.me/+UxP0ioC9Kp00MjVl', 'name' => 'Channel 2'],
@@ -42,7 +55,7 @@ function getChannels() {
     return array_merge($DEFAULT_CHANNELS, $extra);
 }
 
-// ================== API ==================
+// ================== TELEGRAM API ==================
 function api($method, $params = []) {
     $url = "https://api.telegram.org/bot" . BOT_TOKEN . "/" . $method;
     $ch = curl_init();
@@ -130,7 +143,7 @@ function createBatch($admin_id) {
     return $new_id;
 }
 
-// ================== UI ==================
+// ================== UI BUILDERS ==================
 function mainMenuKeyboard() {
     return json_encode(['inline_keyboard' => [
         [['text' => '📢 Manage Channels', 'callback_data' => 'menu_channels']],
@@ -169,7 +182,7 @@ function showUploadMenu($chat_id, $admin_id, $edit_id = null) {
         $batches = jload('batches.json');
         $cnt = count($batches[$active]['files'] ?? []);
         $text = "📁 <b>Active Batch #{$active}</b>\n\nFiles added: <b>{$cnt}</b>\n\n";
-        $text .= "➡️ Just send any file/video/photo to this bot.\nIt will be added automatically.\n\nWhen done, press <b>✅ DN (Create Link)</b>.";
+        $text .= "➡️ Just send any file/video/photo to this bot.\nIt will be added automatically.\n\nWhen done, press <b>✅ DN (Create Link)</b> or type <code>/Dn</code>.";
         $kb = [
             [['text' => '✅ DN (Create Link)', 'callback_data' => 'finishbatch']],
             [['text' => '❌ Cancel Batch', 'callback_data' => 'cancelbatch']],
@@ -227,7 +240,7 @@ function showBroadcastMenu($chat_id, $edit_id = null) {
     else api('sendMessage', $params);
 }
 
-// ================== FILE ADDED CARD ==================
+// ================== CARDS ==================
 function fileAddedCard($chat_id, $file_name, $batch_id, $count, $caption) {
     $cap = $caption ?: 'Saved';
     $text = "┏━━━━━━━━━━━━━━━┓\n";
@@ -239,6 +252,38 @@ function fileAddedCard($chat_id, $file_name, $batch_id, $count, $caption) {
     $text .= "➕ Send more files\n";
     $text .= "🔗 When finished use /Dn";
     api('sendMessage', ['chat_id' => $chat_id, 'text' => $text, 'parse_mode' => 'HTML']);
+}
+
+function downloadReadyCard($chat_id, $count, $link) {
+    $card = "┏━━━━━━━━━━━━━━━┓\n";
+    $card .= "   ✅ <b>DOWNLOAD READY</b>   \n";
+    $card .= "┗━━━━━━━━━━━━━━━┛\n\n";
+    $card .= "📦 Files: <b>{$count}</b>\n";
+    $card .= "🔐 Status: <b>Protected</b>\n\n";
+    $card .= "🔗 <b>YOUR SHARE LINK</b>\n\n";
+    $card .= "<code>{$link}</code>";
+    api('sendMessage', ['chat_id' => $chat_id, 'text' => $card, 'parse_mode' => 'HTML', 'disable_web_page_preview' => true]);
+}
+
+// ================== FINISH BATCH (shared by /Dn and button) ==================
+function finishBatch($chat_id, $admin_id) {
+    $active = getActiveBatch($admin_id);
+    if ($active === null) {
+        api('sendMessage', ['chat_id' => $chat_id, 'text' => "⚠️ No active batch. Start one from admin panel."]);
+        return;
+    }
+    $batches = jload('batches.json');
+    $cnt = count($batches[$active]['files'] ?? []);
+    if ($cnt === 0) {
+        api('sendMessage', ['chat_id' => $chat_id, 'text' => "⚠️ Batch is empty. Send some files first."]);
+        return;
+    }
+    $batches[$active]['status'] = 'published';
+    $token = $batches[$active]['token'];
+    jsave('batches.json', $batches);
+    setActiveBatch($admin_id, null);
+    $link = "https://t.me/" . BOT_USERNAME . "?start=" . $token;
+    downloadReadyCard($chat_id, $cnt, $link);
 }
 
 // ================== SEND FILES ==================
@@ -266,7 +311,7 @@ function sendFilesByBatch($chat_id, $batch_id) {
     }
 }
 
-// ================== VERIFY ==================
+// ================== VERIFY MESSAGE ==================
 function sendVerifyMessage($chat_id, $token) {
     $channels = getChannels();
     $text = "🔒 <b>Join all channels below to unlock the files</b>\n\n";
@@ -290,7 +335,7 @@ if (!$update) { echo "Bot is running. No update."; exit; }
 try { handleUpdate($update); }
 catch (Throwable $e) { file_put_contents(DATA_DIR . '/error.log', date('c') . ' ' . $e->getMessage() . ' @ ' . $e->getFile() . ':' . $e->getLine() . "\n", FILE_APPEND); }
 
-// ================== MAIN ==================
+// ================== MAIN HANDLER ==================
 function handleUpdate($update) {
     // ============ CALLBACK ============
     if (isset($update['callback_query'])) {
@@ -300,6 +345,7 @@ function handleUpdate($update) {
         $user_id = $cq['from']['id'];
         $data    = $cq['data'] ?? '';
 
+        // ---- User verify ----
         if (strpos($data, 'verify:') === 0) {
             $token = substr($data, 7);
             if (checkAllChannels($user_id)) {
@@ -318,6 +364,7 @@ function handleUpdate($update) {
             return;
         }
 
+        // ---- Admin panel ----
         if (!isAdmin($user_id)) { api('answerCallbackQuery', ['callback_query_id' => $cq['id'], 'text' => '❌ Not admin.', 'show_alert' => true]); return; }
 
         if ($data === 'menu_main')     { api('answerCallbackQuery', ['callback_query_id' => $cq['id']]); showMainMenu($chat_id, $msg_id); return; }
@@ -332,7 +379,7 @@ function handleUpdate($update) {
             $state[$user_id]['awaiting'] = 'addchannel';
             jsave('state.json', $state);
             api('sendMessage', ['chat_id' => $chat_id, 'parse_mode' => 'HTML',
-                'text' => "➕ <b>Add New Channel</b>\n\nSend in this format:\n\n<code>Channel Name | @username_or_-100ID | https://t.me/link</code>"]);
+                'text' => "➕ <b>Add New Channel</b>\n\nSend in this format:\n\n<code>Channel Name | @username_or_-100ID | https://t.me/link</code>\n\nExample:\n<code>My Channel | @mychannel | https://t.me/mychannel</code>"]);
             api('answerCallbackQuery', ['callback_query_id' => $cq['id']]);
             return;
         }
@@ -341,7 +388,7 @@ function handleUpdate($update) {
             $idx = (int)substr($data, 6);
             $channels = getChannels();
             if (!isset($channels[$idx]) || $idx < 5) {
-                api('answerCallbackQuery', ['callback_query_id' => $cq['id'], 'text' => '❌ Default channel.', 'show_alert' => true]); return;
+                api('answerCallbackQuery', ['callback_query_id' => $cq['id'], 'text' => '❌ Default channel, cannot delete.', 'show_alert' => true]); return;
             }
             $extra = jload('channels.json');
             $extra_idx = $idx - 5;
@@ -358,7 +405,7 @@ function handleUpdate($update) {
         if ($data === 'newbatch') {
             $existing = getActiveBatch($user_id);
             if ($existing !== null) {
-                api('answerCallbackQuery', ['callback_query_id' => $cq['id'], 'text' => "⚠️ Batch #{$existing} open.", 'show_alert' => true]); return;
+                api('answerCallbackQuery', ['callback_query_id' => $cq['id'], 'text' => "⚠️ Batch #{$existing} already open.", 'show_alert' => true]); return;
             }
             $bid = createBatch($user_id);
             setActiveBatch($user_id, $bid);
@@ -387,20 +434,8 @@ function handleUpdate($update) {
             $batches = jload('batches.json');
             $cnt = count($batches[$active]['files'] ?? []);
             if ($cnt === 0) { api('answerCallbackQuery', ['callback_query_id' => $cq['id'], 'text' => '⚠️ Empty batch.', 'show_alert' => true]); return; }
-            $batches[$active]['status'] = 'published';
-            $token = $batches[$active]['token'];
-            jsave('batches.json', $batches);
-            setActiveBatch($user_id, null);
-            $link = "https://t.me/" . BOT_USERNAME . "?start=" . $token;
             api('answerCallbackQuery', ['callback_query_id' => $cq['id'], 'text' => '✅ Link created!']);
-            $card = "┏━━━━━━━━━━━━━━━┓\n";
-            $card .= "   ✅ <b>DOWNLOAD READY</b>   \n";
-            $card .= "┗━━━━━━━━━━━━━━━┛\n\n";
-            $card .= "📦 Files: <b>{$cnt}</b>\n";
-            $card .= "🔐 Status: <b>Protected</b>\n\n";
-            $card .= "🔗 <b>YOUR SHARE LINK</b>\n\n";
-            $card .= "<code>{$link}</code>";
-            api('sendMessage', ['chat_id' => $chat_id, 'text' => $card, 'parse_mode' => 'HTML', 'disable_web_page_preview' => true]);
+            finishBatch($chat_id, $user_id);
             return;
         }
 
@@ -421,10 +456,12 @@ function handleUpdate($update) {
             $state[$user_id]['awaiting'] = 'broadcast';
             jsave('state.json', $state);
             api('sendMessage', ['chat_id' => $chat_id, 'parse_mode' => 'HTML',
-                'text' => "📢 <b>Broadcast Mode</b>\n\nNow send the message (text/photo/video) to deliver to all users.\n\nCancel: /cancel"]);
+                'text' => "📢 <b>Broadcast Mode Active</b>\n\nNow send the message (text/photo/video) to deliver to all users.\n\nCancel: /cancel"]);
             api('answerCallbackQuery', ['callback_query_id' => $cq['id']]);
             return;
         }
+
+        api('answerCallbackQuery', ['callback_query_id' => $cq['id']]);
         return;
     }
 
@@ -450,6 +487,7 @@ function handleUpdate($update) {
             return;
         }
 
+        // ---- Channel add pending ----
         if ($awaiting === 'addchannel' && $text) {
             $parts = array_map('trim', explode('|', $text));
             if (count($parts) !== 3 || !$parts[0] || !$parts[1] || !$parts[2]) {
@@ -466,6 +504,7 @@ function handleUpdate($update) {
             return;
         }
 
+        // ---- Broadcast pending ----
         if ($awaiting === 'broadcast') {
             unset($state[$user_id]['awaiting']);
             jsave('state.json', $state);
@@ -488,7 +527,13 @@ function handleUpdate($update) {
             return;
         }
 
-        // === AUTO FILE ADD — No /save needed ===
+        // ---- /Dn command ----
+        if (strtolower($text) === '/dn') {
+            finishBatch($chat_id, $user_id);
+            return;
+        }
+
+        // ---- AUTO FILE ADD ----
         if (isset($msg['document']) || isset($msg['video']) || isset($msg['photo']) || isset($msg['audio'])) {
             $active = getActiveBatch($user_id);
             if ($active !== null) {
