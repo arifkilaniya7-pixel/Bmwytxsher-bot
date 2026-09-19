@@ -1,7 +1,6 @@
 <?php
 /**
- * Telegram Force-Join File Bot — FINAL SIMPLE VERSION
- * No batches. Just send files -> /Dn -> get link.
+ * Telegram Force-Join File Bot — FINAL FIXED
  */
 
 error_reporting(E_ALL);
@@ -10,9 +9,10 @@ ini_set('log_errors', 1);
 
 // ================== CONFIG ==================
 define('BOT_TOKEN', getenv('BOT_TOKEN') ?: 'YAHAN_APNA_TOKEN');
-define('BOT_USERNAME', 'bmwytxh4ckbot');   // <-- HARDCODED, koi confusion nahi
+define('BOT_USERNAME', 'bmwytxh4ckbot');   // hardcoded, no confusion
 define('WEBHOOK_SECRET', getenv('WEBHOOK_SECRET') ?: 'bmwytx2024');
 
+// Sirf ye 2 admin hain. Teesri ID admin nahi hogi.
 $ADMIN_IDS = [8980897228, 5997885135];
 
 $DEFAULT_CHANNELS = [
@@ -78,13 +78,28 @@ function checkAllChannels($user_id) {
     return true;
 }
 
-// ================== WEBHOOK ==================
+// ================== WEBHOOK / DEBUG ==================
 if (isset($_GET['set']) && $_GET['set'] === WEBHOOK_SECRET) {
     header('Content-Type: application/json');
     echo json_encode(api('setWebhook', ['url' => baseUrl() . '/index.php']), JSON_PRETTY_PRINT); exit;
 }
 if (isset($_GET['info'])) { header('Content-Type: application/json'); echo json_encode(api('getWebhookInfo'), JSON_PRETTY_PRINT); exit; }
 if (isset($_GET['ping'])) { echo "OK - Bot is alive"; exit; }
+if (isset($_GET['debug'])) {
+    header('Content-Type: application/json');
+    $links = jload('links.json');
+    echo json_encode([
+        'bot_username' => BOT_USERNAME,
+        'total_links' => count($links),
+        'links' => array_map(fn($b) => [
+            'id' => $b['id'],
+            'token' => $b['token'],
+            'files' => count($b['files'] ?? []),
+            'full_link' => "https://t.me/" . BOT_USERNAME . "?start=" . $b['token'],
+        ], array_values($links)),
+    ], JSON_PRETTY_PRINT);
+    exit;
+}
 
 // ================== USERS ==================
 function saveUser($user_id, $from) {
@@ -103,7 +118,7 @@ function markVerified($user_id) {
     if (isset($users[$user_id])) { $users[$user_id]['verified'] = 1; jsave('users.json', $users); }
 }
 
-// ================== DRAFT (ek hi draft, batch ka jhanjhat nahi) ==================
+// ================== DRAFT ==================
 function getDraft($admin_id) {
     $drafts = jload('draft.json');
     return $drafts[$admin_id] ?? null;
@@ -145,9 +160,7 @@ function showChannelsMenu($chat_id, $edit_id = null) {
 function showUploadMenu($chat_id, $admin_id, $edit_id = null) {
     $draft = getDraft($admin_id);
     $cnt = $draft ? count($draft['files'] ?? []) : 0;
-    $text = "📁 <b>Upload Files</b>\n\n";
-    $text .= "Files added: <b>{$cnt}</b>\n\n";
-    $text .= "➡️ Just send any file/video/photo/zip/apk to this bot.\nIt will be added automatically.\n\nWhen finished, press <b>✅ DN (Create Link)</b> or type <code>/Dn</code>.";
+    $text = "📁 <b>Upload Files</b>\n\nFiles added: <b>{$cnt}</b>\n\n➡️ Just send any file/video/photo/zip/apk to this bot.\nIt will be added automatically.\n\nWhen finished, press <b>✅ DN (Create Link)</b> or type <code>/Dn</code>.";
     $kb = [
         [['text' => '✅ DN (Create Link)', 'callback_data' => 'finishdraft']],
         [['text' => '🗑️ Clear Files', 'callback_data' => 'cleardraft']],
@@ -226,7 +239,7 @@ function downloadReadyCard($chat_id, $count, $link) {
     api('sendMessage', ['chat_id' => $chat_id, 'text' => $card, 'parse_mode' => 'HTML', 'disable_web_page_preview' => true]);
 }
 
-// ================== FINISH DRAFT -> LINK ==================
+// ================== FINISH -> LINK ==================
 function finishDraft($chat_id, $admin_id) {
     $draft = getDraft($admin_id);
     if (!$draft || empty($draft['files'])) {
@@ -244,7 +257,6 @@ function finishDraft($chat_id, $admin_id) {
     ];
     jsave('links.json', $links);
     setDraft($admin_id, null);
-
     $cnt = count($draft['files']);
     $link = "https://t.me/" . BOT_USERNAME . "?start=" . $token;
     downloadReadyCard($chat_id, $cnt, $link);
@@ -256,10 +268,8 @@ function sendFilesByLink($chat_id, $link_id) {
     if (!isset($links[$link_id])) { api('sendMessage', ['chat_id' => $chat_id, 'text' => "📂 Link invalid."]); return; }
     $files = $links[$link_id]['files'] ?? [];
     if (!$files) { api('sendMessage', ['chat_id' => $chat_id, 'text' => "📂 No files."]); return; }
-
     api('sendMessage', ['chat_id' => $chat_id, 'parse_mode' => 'HTML',
         'text' => "✅ <b>Verification Successful!</b>\n\n📦 Total: <b>" . count($files) . "</b> files\nSending now..."]);
-
     foreach ($files as $f) {
         $p = ['chat_id' => $chat_id, 'caption' => $f['caption'] ?? ''];
         switch ($f['type']) {
@@ -273,7 +283,7 @@ function sendFilesByLink($chat_id, $link_id) {
     }
 }
 
-// ================== VERIFY ==================
+// ================== VERIFY MESSAGE ==================
 function sendVerifyMessage($chat_id, $token) {
     $channels = getChannels();
     $text = "🔒 <b>Join all channels below to unlock the files</b>\n\n";
@@ -299,6 +309,7 @@ catch (Throwable $e) { file_put_contents(DATA_DIR . '/error.log', date('c') . ' 
 
 // ================== HANDLER ==================
 function handleUpdate($update) {
+
     // ============ CALLBACK ============
     if (isset($update['callback_query'])) {
         $cq = $update['callback_query'];
@@ -307,6 +318,7 @@ function handleUpdate($update) {
         $user_id = $cq['from']['id'];
         $data    = $cq['data'] ?? '';
 
+        // ---- User verify ----
         if (strpos($data, 'verify:') === 0) {
             $token = substr($data, 7);
             if (checkAllChannels($user_id)) {
@@ -315,14 +327,19 @@ function handleUpdate($update) {
                 $links = jload('links.json');
                 $link_id = null;
                 foreach ($links as $lid => $b) if (($b['token'] ?? '') === $token) { $link_id = $lid; break; }
-                if ($link_id !== null) { api('deleteMessage', ['chat_id' => $chat_id, 'message_id' => $msg_id]); sendFilesByLink($chat_id, $link_id); }
-                else api('answerCallbackQuery', ['callback_query_id' => $cq['id'], 'text' => '❌ Invalid link.', 'show_alert' => true]);
+                if ($link_id !== null) {
+                    api('deleteMessage', ['chat_id' => $chat_id, 'message_id' => $msg_id]);
+                    sendFilesByLink($chat_id, $link_id);
+                } else {
+                    api('answerCallbackQuery', ['callback_query_id' => $cq['id'], 'text' => '❌ Invalid link.', 'show_alert' => true]);
+                }
             } else {
                 api('answerCallbackQuery', ['callback_query_id' => $cq['id'], 'text' => '❌ Join all channels first!', 'show_alert' => true]);
             }
             return;
         }
 
+        // ---- Admin panel ----
         if (!isAdmin($user_id)) { api('answerCallbackQuery', ['callback_query_id' => $cq['id'], 'text' => '❌ Not admin.', 'show_alert' => true]); return; }
 
         if ($data === 'menu_main')     { api('answerCallbackQuery', ['callback_query_id' => $cq['id']]); showMainMenu($chat_id, $msg_id); return; }
@@ -345,9 +362,7 @@ function handleUpdate($update) {
         if (strpos($data, 'delch:') === 0) {
             $idx = (int)substr($data, 6);
             $channels = getChannels();
-            if (!isset($channels[$idx]) || $idx < 5) {
-                api('answerCallbackQuery', ['callback_query_id' => $cq['id'], 'text' => '❌ Default channel.', 'show_alert' => true]); return;
-            }
+            if (!isset($channels[$idx]) || $idx < 5) { api('answerCallbackQuery', ['callback_query_id' => $cq['id'], 'text' => '❌ Default channel.', 'show_alert' => true]); return; }
             $extra = jload('channels.json');
             $extra_idx = $idx - 5;
             if (isset($extra[$extra_idx])) {
@@ -362,9 +377,7 @@ function handleUpdate($update) {
 
         if ($data === 'finishdraft') {
             $draft = getDraft($user_id);
-            if (!$draft || empty($draft['files'])) {
-                api('answerCallbackQuery', ['callback_query_id' => $cq['id'], 'text' => '⚠️ No files.', 'show_alert' => true]); return;
-            }
+            if (!$draft || empty($draft['files'])) { api('answerCallbackQuery', ['callback_query_id' => $cq['id'], 'text' => '⚠️ No files.', 'show_alert' => true]); return; }
             api('answerCallbackQuery', ['callback_query_id' => $cq['id'], 'text' => '✅ Link created!']);
             finishDraft($chat_id, $user_id);
             return;
@@ -390,7 +403,7 @@ function handleUpdate($update) {
             $state[$user_id]['awaiting'] = 'broadcast';
             jsave('state.json', $state);
             api('sendMessage', ['chat_id' => $chat_id, 'parse_mode' => 'HTML',
-                'text' => "📢 <b>Broadcast Mode</b>\n\nSend the message (text/photo/video) to deliver to all users.\n\nCancel: /cancel"]);
+                'text' => "📢 <b>Broadcast Mode</b>\n\nSend the message to deliver to all users.\n\nCancel: /cancel"]);
             api('answerCallbackQuery', ['callback_query_id' => $cq['id']]);
             return;
         }
@@ -407,6 +420,7 @@ function handleUpdate($update) {
 
     saveUser($user_id, $from);
 
+    // ============ ADMIN ============
     if (isAdmin($user_id)) {
         $state = jload('state.json');
         $awaiting = $state[$user_id]['awaiting'] ?? null;
@@ -456,10 +470,10 @@ function handleUpdate($update) {
             return;
         }
 
-        // ===== /Dn =====
-        if (strtolower($text) === '/dn') { finishDraft($chat_id, $user_id); return; }
+        // /Dn
+        if (strtolower(trim($text)) === '/dn') { finishDraft($chat_id, $user_id); return; }
 
-        // ===== AUTO FILE ADD (no batch, just draft) =====
+        // AUTO FILE ADD
         if (isset($msg['document']) || isset($msg['video']) || isset($msg['photo']) || isset($msg['audio'])) {
             $type = null; $fid = null; $fname = '';
             if (isset($msg['document'])) { $type = 'document'; $fid = $msg['document']['file_id']; $fname = $msg['document']['file_name'] ?? 'document'; }
@@ -471,7 +485,6 @@ function handleUpdate($update) {
             $draft = getDraft($user_id) ?? ['files' => []];
             $draft['files'][] = ['type' => $type, 'file_id' => $fid, 'caption' => $caption, 'file_name' => $fname];
             setDraft($user_id, $draft);
-
             fileAddedCard($chat_id, $fname, count($draft['files']), $caption);
             return;
         }
@@ -481,18 +494,28 @@ function handleUpdate($update) {
     }
 
     // ============ USER ============
+    // Extract token from /start <token>  or  /start@botname <token>
     $token = null;
-    if (strpos($text, '/start') === 0) {
-        $parts = explode(' ', trim($text), 2);
+    if (stripos($text, '/start') === 0) {
+        $parts = preg_split('/\s+/', trim($text), 2);
         if (isset($parts[1])) $token = trim($parts[1]);
     }
+
     if ($token) {
         $links = jload('links.json');
         $link_id = null;
-        foreach ($links as $lid => $b) if (($b['token'] ?? '') === $token) { $link_id = $lid; break; }
-        if ($link_id === null) { api('sendMessage', ['chat_id' => $chat_id, 'text' => "❌ Invalid link."]); return; }
+        foreach ($links as $lid => $b) {
+            if (($b['token'] ?? '') === $token) { $link_id = $lid; break; }
+        }
+
+        if ($link_id === null) {
+            api('sendMessage', ['chat_id' => $chat_id, 'text' => "❌ This link is invalid or expired."]);
+            return;
+        }
+
         $users = jload('users.json');
         $isVerified = !empty($users[$user_id]['verified']);
+
         if ($isVerified || checkAllChannels($user_id)) {
             markVerified($user_id);
             sendFilesByLink($chat_id, $link_id);
@@ -501,6 +524,14 @@ function handleUpdate($update) {
         }
         return;
     }
+
+    // Plain /start without token
+    if (stripos($text, '/start') === 0) {
+        api('sendMessage', ['chat_id' => $chat_id, 'parse_mode' => 'HTML',
+            'text' => "👋 <b>Welcome!</b>\n\nOpen me from a share link to get files."]);
+        return;
+    }
+
     api('sendMessage', ['chat_id' => $chat_id, 'parse_mode' => 'HTML',
         'text' => "👋 <b>Welcome!</b>\n\nOpen me from a share link to get files."]);
 }
