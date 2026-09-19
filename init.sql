@@ -1,0 +1,20 @@
+CREATE TABLE IF NOT EXISTS users (
+    user_id BIGINT PRIMARY KEY,
+    username VARCHAR(64) DEFAULT NULL,
+    first_name VARCHAR(128) DEFAULT NULL,
+    first_seen DATETIME DEFAULT CURRENT_TIMESTAMP,
+    verified TINYINT DEFAULT 0
+);
+
+CREATE TABLE IF NOT EXISTS files (
+    id INT AUTO_INCREMENT PRIMARY KEY,
+    file_type VARCHAR(16),
+    file_id TEXT,
+    caption TEXT,
+    added_on DATETIME DEFAULT CURRENT_TIMESTAMP
+);
+
+CREATE TABLE IF NOT EXISTS settings (
+    k VARCHAR(64) PRIMARY KEY,
+    v TEXT
+);
