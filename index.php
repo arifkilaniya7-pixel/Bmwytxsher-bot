@@ -16,10 +16,10 @@ define('WEBHOOK_SECRET', 'bmwytx2024');
 $GLOBALS['ADMIN_IDS'] = [8980897228, 5997885135];
 
 $GLOBALS['DEFAULT_CHANNELS'] = [
-    ['id' => '-1000000000001', 'link' => 'https://t.me/+JQTJ0zj84ftlZDdl', 'name' => 'Channel 1'],
-    ['id' => '-1000000000002', 'link' => 'https://t.me/+UxP0ioC9Kp00MjVl', 'name' => 'Channel 2'],
-    ['id' => '-1000000000003', 'link' => 'https://t.me/+WftPXj9G49w2YmFl', 'name' => 'Channel 3'],
-    ['id' => '-1000000000004', 'link' => 'https://t.me/+dhTIGNKd66BlMDVl', 'name' => 'Channel 4'],
+    ['id' => '-1004300951043', 'link' => 'https://t.me/+ou-f7trdWvBlYjFl', 'name' => 'Channel 1'],
+    ['id' => '-1004319519511', 'link' => 'https://t.me/+jw9fTzLxdQY3NTg1', 'name' => 'Channel 2'],
+    ['id' => '-1003937510791', 'link' => 'https://t.me/+9JGQJu9n1tJlMzg1', 'name' => 'Channel 3'],
+    ['id' => '-1002718394198', 'link' => 'https://t.me/+BXNrpH0h3o1kNThl', 'name' => 'Channel 4'],
     ['id' => '@FREEFIRE_HACK_MOD_LINKS', 'link' => 'https://t.me/FREEFIRE_HACK_MOD_LINKS', 'name' => 'Channel 5'],
 ];
 
