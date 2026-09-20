@@ -2,11 +2,17 @@
 /**
  * Telegram Force-Join File Bot — FINAL (FIXED)
  *
- * Fix applied: access to files now ALWAYS re-checks live channel membership
- * via getChatMember, instead of trusting a cached "verified" flag. This
- * closes the bug where a user who joined once, got verified, then left the
+ * Fix 1: access to files now ALWAYS re-checks live channel membership via
+ * getChatMember, instead of trusting a cached "verified" flag. This closes
+ * the bug where a user who joined once, got verified, then left the
  * channels could still get files on any future /start link without
  * rejoining.
+ *
+ * Fix 2: support for "Request to Join" (approval-required) invite links.
+ * The bot now listens for chat_join_request updates, remembers who has a
+ * pending request per channel, shows that in the verify message (⏳ Pending
+ * vs ❌ Not joined), and gives the admin a one-tap "✅ Approve All Pending"
+ * button to bulk-approve every pending request across all channels at once.
  */
 
 error_reporting(E_ALL);
@@ -15,7 +21,7 @@ ini_set('log_errors', 1);
 ini_set('error_log', __DIR__ . '/data/php_error.log');
 
 // ================== CONFIG ==================
-define('BOT_TOKEN', getenv('BOT_TOKEN') ?: '8665909582:AAGs4JqjB4CBhCeVY0Ns_X3KU5_AuqqtQXQ');
+define('BOT_TOKEN', getenv('BOT_TOKEN') ?: 'YAHAN_APNA_TOKEN');
 define('BOT_USERNAME', 'bmwytxh4ckbot');
 define('WEBHOOK_SECRET', 'bmwytx2024');
 
@@ -49,6 +55,35 @@ function jsave($file, $data) {
 function getChannels() {
     $extra = jload('channels.json');
     return array_merge($GLOBALS['DEFAULT_CHANNELS'], $extra);
+}
+
+// ================== PENDING JOIN REQUESTS ==================
+// Structure: pending[user_id][chat_id] = ['requested_at' => ..., 'first_name' => ...]
+function loadPending() { return jload('pending.json'); }
+function savePending($p) { jsave('pending.json', $p); }
+
+function addPendingRequest($user_id, $chat_id, $first_name = '') {
+    $p = loadPending();
+    $p[$user_id][$chat_id] = ['requested_at' => date('Y-m-d H:i:s'), 'first_name' => $first_name];
+    savePending($p);
+}
+function removePendingRequest($user_id, $chat_id) {
+    $p = loadPending();
+    if (isset($p[$user_id][$chat_id])) {
+        unset($p[$user_id][$chat_id]);
+        if (empty($p[$user_id])) unset($p[$user_id]);
+        savePending($p);
+    }
+}
+function hasPendingRequest($user_id, $chat_id) {
+    $p = loadPending();
+    return isset($p[$user_id][$chat_id]);
+}
+function countPendingRequests() {
+    $p = loadPending();
+    $n = 0;
+    foreach ($p as $chats) $n += count($chats);
+    return $n;
 }
 
 // ================== API ==================
@@ -99,7 +134,7 @@ if (isset($_GET['set']) && $_GET['set'] === WEBHOOK_SECRET) {
     header('Content-Type: application/json');
     echo json_encode(api('setWebhook', [
         'url' => baseUrl() . '/index.php',
-        'allowed_updates' => json_encode(['message', 'callback_query', 'edited_message', 'channel_post', 'edited_channel_post'])
+        'allowed_updates' => json_encode(['message', 'callback_query', 'edited_message', 'channel_post', 'edited_channel_post', 'chat_join_request'])
     ]), JSON_PRETTY_PRINT); exit;
 }
 if (isset($_GET['info'])) { header('Content-Type: application/json'); echo json_encode(api('getWebhookInfo'), JSON_PRETTY_PRINT); exit; }
@@ -183,10 +218,14 @@ function showMainMenu($chat_id, $edit_id = null) {
 }
 function showChannelsMenu($chat_id, $edit_id = null) {
     $channels = getChannels();
-    $text = "📢 <b>Channel Management</b>\n\nTotal: <b>" . count($channels) . "</b>\n\nFirst 5 are default (cannot delete).\nOthers can be deleted.";
+    $pendingCount = countPendingRequests();
+    $text = "📢 <b>Channel Management</b>\n\nTotal: <b>" . count($channels) . "</b>\n⏳ Pending join requests: <b>{$pendingCount}</b>\n\nFirst 5 are default (cannot delete).\nOthers can be deleted.";
     $kb = [];
     foreach ($channels as $idx => $ch) $kb[] = [['text' => "🗑️ " . $ch['name'], 'callback_data' => 'delch:' . $idx]];
     $kb[] = [['text' => '➕ Add Channel', 'callback_data' => 'addch']];
+    if ($pendingCount > 0) {
+        $kb[] = [['text' => "✅ Approve All Pending ({$pendingCount})", 'callback_data' => 'approveall']];
+    }
     $kb[] = [['text' => '◀️ Back', 'callback_data' => 'menu_main']];
     $params = ['chat_id' => $chat_id, 'text' => $text, 'parse_mode' => 'HTML', 'reply_markup' => json_encode(['inline_keyboard' => $kb])];
     if ($edit_id) { $params['message_id'] = $edit_id; api('editMessageText', $params); }
@@ -319,16 +358,28 @@ function sendFilesByLink($chat_id, $link_id) {
 }
 
 // ================== VERIFY ==================
-function sendVerifyMessage($chat_id, $token) {
+function sendVerifyMessage($chat_id, $token, $user_id = null) {
     $channels = getChannels();
     $text = "🔒 <b>Join all channels below to unlock the files</b>\n\n";
     $kb = [];
     $i = 1;
     foreach ($channels as $ch) {
-        $text .= "{$i}. " . $ch['name'] . "\n";
+        $icon = '❌';
+        if ($user_id !== null) {
+            // Live status for channels the bot can read directly.
+            $r = api('getChatMember', ['chat_id' => $ch['id'], 'user_id' => $user_id]);
+            $status = $r['result']['status'] ?? null;
+            if (in_array($status, ['creator', 'administrator', 'member'], true)) {
+                $icon = '✅';
+            } elseif (hasPendingRequest($user_id, $ch['id'])) {
+                $icon = '⏳ Pending approval';
+            }
+        }
+        $text .= "{$i}. {$icon} " . $ch['name'] . "\n";
         $kb[] = [['text' => "📢 Join " . $ch['name'], 'url' => $ch['link']]];
         $i++;
     }
+    $text .= "\n⏳ = aapne request bhej di hai, admin approve karega. Approve hote hi neeche <b>Verify</b> dabao.";
     $kb[] = [['text' => "✅ Verify / I have joined", 'callback_data' => 'verify:' . $token]];
     api('sendMessage', ['chat_id' => $chat_id, 'text' => $text, 'parse_mode' => 'HTML',
         'disable_web_page_preview' => true,
@@ -352,6 +403,18 @@ try {
 
 // ================== HANDLER ==================
 function handleUpdate($update) {
+
+    // ---- Someone tapped "Request to Join" on one of our channels ----
+    if (isset($update['chat_join_request'])) {
+        $jr = $update['chat_join_request'];
+        $chat_id = $jr['chat']['id'];
+        $user_id = $jr['from']['id'];
+        $first_name = $jr['from']['first_name'] ?? '';
+        addPendingRequest($user_id, $chat_id, $first_name);
+        saveUser($user_id, $jr['from']);
+        @file_put_contents(DATA_DIR . '/check.log', date('c') . " JOINREQUEST user=$user_id chat=$chat_id\n", FILE_APPEND);
+        return;
+    }
 
     if (isset($update['callback_query'])) {
         $cq = $update['callback_query'];
@@ -381,7 +444,14 @@ function handleUpdate($update) {
                 }
             } else {
                 markUnverified($user_id);
-                api('answerCallbackQuery', ['callback_query_id' => $cq['id'], 'text' => '❌ Join all channels first!', 'show_alert' => true]);
+                $pendingCount = 0;
+                foreach (getChannels() as $ch) if (hasPendingRequest($user_id, $ch['id'])) $pendingCount++;
+                $alertText = $pendingCount > 0
+                    ? "⏳ Aapki {$pendingCount} request(s) abhi pending hain, admin approve karega. Thodi der baad try karo."
+                    : "❌ Join all channels first!";
+                api('answerCallbackQuery', ['callback_query_id' => $cq['id'], 'text' => $alertText, 'show_alert' => true]);
+                sendVerifyMessage($chat_id, $token, $user_id);
+                api('deleteMessage', ['chat_id' => $chat_id, 'message_id' => $msg_id]);
             }
             return;
         }
@@ -444,6 +514,37 @@ function handleUpdate($update) {
             $links = jload('links.json');
             if (isset($links[$lid])) { unset($links[$lid]); jsave('links.json', $links); api('answerCallbackQuery', ['callback_query_id' => $cq['id'], 'text' => "🗑️ Link #{$lid} deleted"]); }
             showLinksMenu($chat_id, $msg_id);
+            return;
+        }
+
+        if ($data === 'approveall') {
+            api('answerCallbackQuery', ['callback_query_id' => $cq['id'], 'text' => '⏳ Approving...']);
+            $pending = loadPending();
+            $approved = 0; $failed = 0;
+            $notifyUsers = [];
+            foreach ($pending as $uid => $chats) {
+                foreach ($chats as $chat_id_p => $info) {
+                    $r = api('approveChatJoinRequest', ['chat_id' => $chat_id_p, 'user_id' => $uid]);
+                    if ($r && !empty($r['ok'])) {
+                        $approved++;
+                        removePendingRequest($uid, $chat_id_p);
+                        $notifyUsers[$uid] = true;
+                    } else {
+                        $failed++;
+                        @file_put_contents(DATA_DIR . '/check.log',
+                            date('c') . " APPROVE_FAIL user=$uid chat=$chat_id_p resp=" . json_encode($r) . "\n", FILE_APPEND);
+                    }
+                    usleep(60000);
+                }
+            }
+            // Notify each user so they know to press Verify again.
+            foreach (array_keys($notifyUsers) as $uid) {
+                api('sendMessage', ['chat_id' => $uid, 'parse_mode' => 'HTML',
+                    'text' => "✅ <b>Aapki join request approve ho gayi hai!</b>\n\nAb apne purane message me <b>Verify / I have joined</b> button dabao, ya link dubara open karo."]);
+                usleep(60000);
+            }
+            api('sendMessage', ['chat_id' => $chat_id, 'text' => "✅ Approved: {$approved}\n❌ Failed: {$failed}"]);
+            showChannelsMenu($chat_id);
             return;
         }
 
@@ -560,7 +661,7 @@ function handleUpdate($update) {
             sendFilesByLink($chat_id, $link_id);
         } else {
             markUnverified($user_id);
-            sendVerifyMessage($chat_id, $token);
+            sendVerifyMessage($chat_id, $token, $user_id);
         }
         return;
     }
