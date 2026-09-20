@@ -1,6 +1,12 @@
 <?php
 /**
- * Telegram Force-Join File Bot — FINAL
+ * Telegram Force-Join File Bot — FINAL (FIXED)
+ *
+ * Fix applied: access to files now ALWAYS re-checks live channel membership
+ * via getChatMember, instead of trusting a cached "verified" flag. This
+ * closes the bug where a user who joined once, got verified, then left the
+ * channels could still get files on any future /start link without
+ * rejoining.
  */
 
 error_reporting(E_ALL);
@@ -71,17 +77,15 @@ function baseUrl() {
 // ================== CHANNEL CHECK ==================
 function checkAllChannels($user_id) {
     $channels = getChannels();
-    $results = [];
     foreach ($channels as $ch) {
         $r = api('getChatMember', ['chat_id' => $ch['id'], 'user_id' => $user_id]);
         $status = $r['result']['status'] ?? 'error';
-        $results[] = $ch['name'] . ': ' . $status;
         if (!$r || empty($r['ok'])) {
             @file_put_contents(DATA_DIR . '/check.log',
                 date('c') . " FAIL {$ch['name']} id={$ch['id']} resp=" . json_encode($r) . "\n", FILE_APPEND);
             return false;
         }
-        if (!in_array($status, ['creator','administrator','member'], true)) {
+        if (!in_array($status, ['creator', 'administrator', 'member'], true)) {
             @file_put_contents(DATA_DIR . '/check.log',
                 date('c') . " NOTMEMBER {$ch['name']} user=$user_id status=$status\n", FILE_APPEND);
             return false;
@@ -95,7 +99,7 @@ if (isset($_GET['set']) && $_GET['set'] === WEBHOOK_SECRET) {
     header('Content-Type: application/json');
     echo json_encode(api('setWebhook', [
         'url' => baseUrl() . '/index.php',
-        'allowed_updates' => json_encode(['message','callback_query','edited_message','channel_post','edited_channel_post'])
+        'allowed_updates' => json_encode(['message', 'callback_query', 'edited_message', 'channel_post', 'edited_channel_post'])
     ]), JSON_PRETTY_PRINT); exit;
 }
 if (isset($_GET['info'])) { header('Content-Type: application/json'); echo json_encode(api('getWebhookInfo'), JSON_PRETTY_PRINT); exit; }
@@ -143,6 +147,10 @@ function saveUser($user_id, $from) {
 function markVerified($user_id) {
     $users = jload('users.json');
     if (isset($users[$user_id])) { $users[$user_id]['verified'] = 1; jsave('users.json', $users); }
+}
+function markUnverified($user_id) {
+    $users = jload('users.json');
+    if (isset($users[$user_id])) { $users[$user_id]['verified'] = 0; jsave('users.json', $users); }
 }
 
 // ================== DRAFT ==================
@@ -354,11 +362,11 @@ function handleUpdate($update) {
 
         @file_put_contents(DATA_DIR . '/callback.log', date('c') . " CB user=$user_id data=$data\n", FILE_APPEND);
 
-        // ---- Verify ----
+        // ---- Verify (always a fresh, live check) ----
         if (strpos($data, 'verify:') === 0) {
             $token = substr($data, 7);
             $ok = checkAllChannels($user_id);
-            @file_put_contents(DATA_DIR . '/check.log', date('c') . " verify user=$user_id result=" . ($ok?'PASS':'FAIL') . "\n", FILE_APPEND);
+            @file_put_contents(DATA_DIR . '/check.log', date('c') . " verify user=$user_id result=" . ($ok ? 'PASS' : 'FAIL') . "\n", FILE_APPEND);
             if ($ok) {
                 api('answerCallbackQuery', ['callback_query_id' => $cq['id'], 'text' => '✅ Verified!']);
                 markVerified($user_id);
@@ -372,6 +380,7 @@ function handleUpdate($update) {
                     api('answerCallbackQuery', ['callback_query_id' => $cq['id'], 'text' => '❌ Invalid link.', 'show_alert' => true]);
                 }
             } else {
+                markUnverified($user_id);
                 api('answerCallbackQuery', ['callback_query_id' => $cq['id'], 'text' => '❌ Join all channels first!', 'show_alert' => true]);
             }
             return;
@@ -543,17 +552,19 @@ function handleUpdate($update) {
         $link_id = null;
         foreach ($links as $lid => $b) if (($b['token'] ?? '') === $token) { $link_id = $lid; break; }
         if ($link_id === null) { api('sendMessage', ['chat_id' => $chat_id, 'text' => "❌ This link is invalid or expired."]); return; }
-        $users = jload('users.json');
-        $isVerified = !empty($users[$user_id]['verified']);
-        if ($isVerified || checkAllChannels($user_id)) {
+
+        // FIX: har baar live check — cached 'verified' flag par kabhi
+        // access decide nahi karte. Isse leave-and-rejoin-bypass band ho jaata hai.
+        if (checkAllChannels($user_id)) {
             markVerified($user_id);
             sendFilesByLink($chat_id, $link_id);
         } else {
+            markUnverified($user_id);
             sendVerifyMessage($chat_id, $token);
         }
         return;
     }
 
     api('sendMessage', ['chat_id' => $chat_id, 'parse_mode' => 'HTML',
-        'text' => '👋 <b>Welcome!</b>\n\nOpen me from a share link to get files.']);
+        'text' => "👋 <b>Welcome!</b>\n\nOpen me from a share link to get files."]);
 }
