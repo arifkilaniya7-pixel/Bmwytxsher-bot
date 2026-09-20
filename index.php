@@ -9,10 +9,12 @@
  * rejoining.
  *
  * Fix 2: support for "Request to Join" (approval-required) invite links.
- * The bot now listens for chat_join_request updates, remembers who has a
- * pending request per channel, shows that in the verify message (⏳ Pending
- * vs ❌ Not joined), and gives the admin a one-tap "✅ Approve All Pending"
- * button to bulk-approve every pending request across all channels at once.
+ * The bot now listens for chat_join_request updates and remembers who has a
+ * pending request per channel. A pending request counts as "passed" for
+ * verification purposes — so users get their files right after tapping
+ * "Request to Join", without waiting for the admin to approve. The admin
+ * gets a one-tap "✅ Approve All Pending" button to bulk-approve every
+ * pending request (making it real membership) whenever they want.
  */
 
 error_reporting(E_ALL);
@@ -21,7 +23,7 @@ ini_set('log_errors', 1);
 ini_set('error_log', __DIR__ . '/data/php_error.log');
 
 // ================== CONFIG ==================
-define('BOT_TOKEN', getenv('BOT_TOKEN') ?: 'YAHAN_APNA_TOKEN');
+define('BOT_TOKEN', getenv('BOT_TOKEN') ?: '8665909582:AAGs4JqjB4CBhCeVY0Ns_X3KU5_AuqqtQXQ');
 define('BOT_USERNAME', 'bmwytxh4ckbot');
 define('WEBHOOK_SECRET', 'bmwytx2024');
 
@@ -110,21 +112,28 @@ function baseUrl() {
 }
 
 // ================== CHANNEL CHECK ==================
+// A channel counts as "passed" if the user is already a full member OR if
+// they at least have a pending join request on that channel (admin will
+// bulk-approve those later via "Approve All Pending"). This lets users get
+// files right after tapping "Request to Join", without waiting for approval.
 function checkAllChannels($user_id) {
     $channels = getChannels();
     foreach ($channels as $ch) {
         $r = api('getChatMember', ['chat_id' => $ch['id'], 'user_id' => $user_id]);
-        $status = $r['result']['status'] ?? 'error';
-        if (!$r || empty($r['ok'])) {
+        $status = $r['result']['status'] ?? null;
+        $isMember = $r && !empty($r['ok']) && in_array($status, ['creator', 'administrator', 'member'], true);
+
+        if ($isMember) continue;
+
+        if (hasPendingRequest($user_id, $ch['id'])) {
             @file_put_contents(DATA_DIR . '/check.log',
-                date('c') . " FAIL {$ch['name']} id={$ch['id']} resp=" . json_encode($r) . "\n", FILE_APPEND);
-            return false;
+                date('c') . " PASS_VIA_PENDING {$ch['name']} user=$user_id\n", FILE_APPEND);
+            continue;
         }
-        if (!in_array($status, ['creator', 'administrator', 'member'], true)) {
-            @file_put_contents(DATA_DIR . '/check.log',
-                date('c') . " NOTMEMBER {$ch['name']} user=$user_id status=$status\n", FILE_APPEND);
-            return false;
-        }
+
+        @file_put_contents(DATA_DIR . '/check.log',
+            date('c') . " NOTMEMBER {$ch['name']} user=$user_id status=" . ($status ?? 'error') . "\n", FILE_APPEND);
+        return false;
     }
     return true;
 }
