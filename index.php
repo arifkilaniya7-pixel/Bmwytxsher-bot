@@ -1,16 +1,17 @@
 <?php
 /**
- * Telegram Force-Join File Bot — FINAL FIXED (callbacks working)
+ * Telegram Force-Join File Bot — FINAL (All Fixed)
  */
 
 error_reporting(E_ALL);
 ini_set('display_errors', 1);
 ini_set('log_errors', 1);
+ini_set('error_log', __DIR__ . '/data/php_error.log');
 
 // ================== CONFIG ==================
 define('BOT_TOKEN', getenv('BOT_TOKEN') ?: 'YAHAN_APNA_TOKEN');
 define('BOT_USERNAME', 'bmwytxh4ckbot');
-define('WEBHOOK_SECRET', getenv('WEBHOOK_SECRET') ?: 'bmwytx2024');
+define('WEBHOOK_SECRET', 'bmwytx2024');
 
 $GLOBALS['ADMIN_IDS'] = [8980897228, 5997885135];
 
@@ -23,24 +24,28 @@ $GLOBALS['DEFAULT_CHANNELS'] = [
 ];
 
 define('DATA_DIR', __DIR__ . '/data');
-if (!is_dir(DATA_DIR)) @mkdir(DATA_DIR, 0755, true);
+if (!is_dir(DATA_DIR)) @mkdir(DATA_DIR, 0777, true);
+@chmod(DATA_DIR, 0777);
 
-// ================== JSON ==================
+// ================== JSON HELPERS ==================
 function jload($file) {
     $path = DATA_DIR . '/' . $file;
     if (!file_exists($path)) return [];
-    $data = json_decode(file_get_contents($path), true);
+    $raw = @file_get_contents($path);
+    if ($raw === false) return [];
+    $data = json_decode($raw, true);
     return is_array($data) ? $data : [];
 }
 function jsave($file, $data) {
-    file_put_contents(DATA_DIR . '/' . $file, json_encode($data, JSON_PRETTY_PRINT | JSON_UNESCAPED_UNICODE), LOCK_EX);
+    $path = DATA_DIR . '/' . $file;
+    @file_put_contents($path, json_encode($data, JSON_PRETTY_PRINT | JSON_UNESCAPED_UNICODE), LOCK_EX);
 }
 function getChannels() {
     $extra = jload('channels.json');
     return array_merge($GLOBALS['DEFAULT_CHANNELS'], $extra);
 }
 
-// ================== API ==================
+// ================== TELEGRAM API ==================
 function api($method, $params = []) {
     $url = "https://api.telegram.org/bot" . BOT_TOKEN . "/" . $method;
     $ch = curl_init();
@@ -50,6 +55,7 @@ function api($method, $params = []) {
         CURLOPT_POSTFIELDS => http_build_query($params),
         CURLOPT_RETURNTRANSFER => true,
         CURLOPT_TIMEOUT => 20,
+        CURLOPT_SSL_VERIFYPEER => false,
     ]);
     $res = curl_exec($ch);
     curl_close($ch);
@@ -75,27 +81,28 @@ function checkAllChannels($user_id) {
     return true;
 }
 
-// ================== WEBHOOK ==================
+// ================== WEBHOOK / DEBUG ENDPOINTS ==================
 if (isset($_GET['set']) && $_GET['set'] === WEBHOOK_SECRET) {
     header('Content-Type: application/json');
     echo json_encode(api('setWebhook', ['url' => baseUrl() . '/index.php']), JSON_PRETTY_PRINT); exit;
 }
 if (isset($_GET['info'])) { header('Content-Type: application/json'); echo json_encode(api('getWebhookInfo'), JSON_PRETTY_PRINT); exit; }
 if (isset($_GET['ping'])) { echo "OK - Bot is alive"; exit; }
+if (isset($_GET['logs'])) {
+    header('Content-Type: text/plain; charset=utf-8');
+    echo "=== error.log ===\n"; echo @file_get_contents(DATA_DIR . '/error.log') ?: "(empty)";
+    echo "\n\n=== php_error.log ===\n"; echo @file_get_contents(DATA_DIR . '/php_error.log') ?: "(empty)";
+    echo "\n\n=== callback.log ===\n"; echo @file_get_contents(DATA_DIR . '/callback.log') ?: "(empty)";
+    exit;
+}
 if (isset($_GET['debug'])) {
     header('Content-Type: application/json');
     $links = jload('links.json');
     echo json_encode([
         'bot_username' => BOT_USERNAME,
         'total_links' => count($links),
-        'links' => array_map(fn($b) => [
-            'id' => $b['id'],
-            'token' => $b['token'],
-            'files' => count($b['files'] ?? []),
-            'full_link' => "https://t.me/" . BOT_USERNAME . "?start=" . $b['token'],
-        ], array_values($links)),
         'data_dir_writable' => is_writable(DATA_DIR),
-        'data_dir' => DATA_DIR,
+        'admin_ids' => $GLOBALS['ADMIN_IDS'],
     ], JSON_PRETTY_PRINT);
     exit;
 }
@@ -299,12 +306,21 @@ function sendVerifyMessage($chat_id, $token) {
         'reply_markup' => json_encode(['inline_keyboard' => $kb])]);
 }
 
-// ================== UPDATE ==================
+// ================== GET UPDATE ==================
 $raw = file_get_contents('php://input');
+if ($raw) {
+    @file_put_contents(DATA_DIR . '/callback.log', date('c') . " RAW: " . substr($raw, 0, 800) . "\n", FILE_APPEND);
+}
 $update = json_decode($raw, true);
 if (!$update) { echo "Bot is running. No update."; exit; }
-try { handleUpdate($update); }
-catch (Throwable $e) { file_put_contents(DATA_DIR . '/error.log', date('c') . ' ' . $e->getMessage() . ' @ ' . $e->getFile() . ':' . $e->getLine() . "\n", FILE_APPEND); }
+
+try {
+    handleUpdate($update);
+} catch (Throwable $e) {
+    $err = date('c') . ' ERROR: ' . $e->getMessage() . ' @ ' . $e->getFile() . ':' . $e->getLine() . "\n";
+    @file_put_contents(DATA_DIR . '/error.log', $err, FILE_APPEND);
+    @file_put_contents(DATA_DIR . '/callback.log', $err, FILE_APPEND);
+}
 
 // ================== HANDLER ==================
 function handleUpdate($update) {
@@ -317,6 +333,10 @@ function handleUpdate($update) {
         $user_id = $cq['from']['id'];
         $data    = $cq['data'] ?? '';
 
+        @file_put_contents(DATA_DIR . '/callback.log',
+            date('c') . " CB user=$user_id data=$data\n", FILE_APPEND);
+
+        // ---- User verify ----
         if (strpos($data, 'verify:') === 0) {
             $token = substr($data, 7);
             if (checkAllChannels($user_id)) {
@@ -337,7 +357,11 @@ function handleUpdate($update) {
             return;
         }
 
-        if (!isAdmin($user_id)) { api('answerCallbackQuery', ['callback_query_id' => $cq['id'], 'text' => '❌ Not admin.', 'show_alert' => true]); return; }
+        // ---- Admin check ----
+        if (!isAdmin($user_id)) {
+            api('answerCallbackQuery', ['callback_query_id' => $cq['id'], 'text' => '❌ Not admin.', 'show_alert' => true]);
+            return;
+        }
 
         if ($data === 'menu_main')     { api('answerCallbackQuery', ['callback_query_id' => $cq['id']]); showMainMenu($chat_id, $msg_id); return; }
         if ($data === 'menu_channels') { api('answerCallbackQuery', ['callback_query_id' => $cq['id']]); showChannelsMenu($chat_id, $msg_id); return; }
@@ -404,6 +428,8 @@ function handleUpdate($update) {
             api('answerCallbackQuery', ['callback_query_id' => $cq['id']]);
             return;
         }
+
+        api('answerCallbackQuery', ['callback_query_id' => $cq['id']]);
         return;
     }
 
@@ -511,5 +537,5 @@ function handleUpdate($update) {
     }
 
     api('sendMessage', ['chat_id' => $chat_id, 'parse_mode' => 'HTML',
-        'text' => "👋 <b>Welcome!</b>\n\nOpen me from a share link to get files."]);
+        'text' => '👋 <b>Welcome!</b>\n\nOpen me from a share link to get files.']);
 }
